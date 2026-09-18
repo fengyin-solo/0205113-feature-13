@@ -145,15 +145,19 @@ public class AdminController {
     @GetMapping("/spot/list")
     public Result<IPage<ScenicSpot>> spotList(@RequestParam(defaultValue = "1") int page,
                                                @RequestParam(defaultValue = "10") int size,
+                                               @RequestParam(required = false) String keyword,
+                                               @RequestParam(required = false) String startDate,
+                                               @RequestParam(required = false) String endDate,
                                                HttpSession session) {
         User operator = (User) session.getAttribute(Constants.SESSION_USER);
         if (operator == null) return Result.error(401, "请先登录");
-        LambdaQueryWrapper<ScenicSpot> w = new LambdaQueryWrapper<>();
-        if (isStaff(operator)) {
-            w.eq(ScenicSpot::getStaffId, operator.getId());
-        }
+        Long staffId = isStaff(operator) ? operator.getId() : null;
+        LambdaQueryWrapper<ScenicSpot> w = com.redtourism.service.impl.StatsServiceImpl.spotWrapper(
+                staffId, keyword,
+                com.redtourism.service.impl.StatsServiceImpl.parseDay(startDate, false),
+                com.redtourism.service.impl.StatsServiceImpl.parseDay(endDate, true));
         w.orderByDesc(ScenicSpot::getCreateTime);
-        return Result.success(spotService.page(new Page<>(page, size), w));
+        return Result.success(spotService.page(new Page<>(page, Math.min(size, 100)), w));
     }
 
     @GetMapping("/spot/save")

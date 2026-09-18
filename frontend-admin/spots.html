@@ -37,10 +37,20 @@
             <div class="top-bar-right"><span id="adminName"></span> <a href="#" onclick="doLogout()">退出</a></div>
         </header>
         <div class="content">
+            <div id="dashboardBackBar" style="display:none"></div>
             <div class="card">
                 <div class="card-header">
                     <h2>景点列表</h2>
                     <button class="btn btn-primary" onclick="openModal()"><i class="fas fa-plus"></i> 新增景点</button>
+                </div>
+                <div class="filter-bar">
+                    <input class="form-control" id="fKeyword" placeholder="搜索名称/地区/主题/地址" onkeydown="if(event.key==='Enter')onSearch()">
+                    <input type="date" class="form-control" id="fStart" title="创建时间起">
+                    <span style="color:#999">至</span>
+                    <input type="date" class="form-control" id="fEnd" title="创建时间止">
+                    <button class="btn btn-primary" onclick="onSearch()"><i class="fas fa-search"></i> 搜索</button>
+                    <button class="btn btn-default" onclick="onReset()"><i class="fas fa-redo"></i> 重置</button>
+                    <span class="list-meta" id="listMeta"></span>
                 </div>
                 <div class="table-wrapper">
                     <table>
@@ -102,16 +112,43 @@ if (!requireAdmin()) throw '';
 renderSidebar();
 
 let currentPage = 1;
+let currentFilter = initListFilter('spot');
+renderDashboardBackBanner('spot');
+
+function onSearch() {
+    const f = readListFilter('spot');
+    if (!f) return;
+    currentFilter = f;
+    loadData(1);
+}
+
+function onReset() {
+    document.getElementById('fKeyword').value = '';
+    document.getElementById('fStart').value = '';
+    document.getElementById('fEnd').value = '';
+    currentFilter = { keyword: '', start: '', end: '' };
+    saveListFilter('spot', currentFilter);
+    loadData(1);
+}
 
 async function loadData(page) {
     currentPage = page;
     document.getElementById('tableBody').innerHTML = '<tr><td colspan="8" class="loading"><i class="fas fa-spinner fa-spin"></i> 加载中...</td></tr>';
-    const data = await api(`/api/admin/spot/list?page=${page}&size=10`);
+    const data = await api('/api/admin/spot/list?' + buildListQuery(currentFilter, page));
     if (!data) { document.getElementById('tableBody').innerHTML = '<tr><td colspan="8" class="empty-state">加载失败</td></tr>'; return; }
 
     const list = data.records || data.list || data || [];
-    const total = data.pages || data.totalPages || Math.ceil((data.total || list.length) / 10);
-    if (!list.length) { document.getElementById('tableBody').innerHTML = '<tr><td colspan="8" class="empty-state"><i class="fas fa-inbox"></i> 暂无数据</td></tr>'; document.getElementById('pagination').innerHTML = ''; return; }
+    const totalCount = data.total || 0;
+    const total = data.pages || data.totalPages || Math.ceil(totalCount / 10);
+    document.getElementById('listMeta').innerHTML = list.length ? listMetaText(currentFilter, totalCount) : '';
+    if (!list.length) {
+        document.getElementById('pagination').innerHTML = '';
+        renderListEmpty('tableBody', {
+            colspan: 8, total: totalCount, module: 'spot',
+            onAdd: 'openModal()', onReset: 'onReset()', addText: '新增景点'
+        });
+        return;
+    }
 
     let h = '';
     list.forEach(s => {

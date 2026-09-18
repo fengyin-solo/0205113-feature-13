@@ -37,6 +37,7 @@
             <div class="top-bar-right"><span id="adminName"></span> <a href="#" onclick="doLogout()">退出</a></div>
         </header>
         <div class="content">
+            <div id="dashboardBackBar" style="display:none"></div>
             <div class="tabs">
                 <button class="tab-btn active" onclick="switchTab('food')">美食管理</button>
                 <button class="tab-btn" onclick="switchTab('store')">门店管理</button>
@@ -47,6 +48,15 @@
                     <div class="card-header">
                         <h2>美食列表</h2>
                         <button class="btn btn-primary" onclick="openFoodModal()"><i class="fas fa-plus"></i> 新增美食</button>
+                    </div>
+                    <div class="filter-bar">
+                        <input class="form-control" id="fFoodKeyword" placeholder="搜索美食名称/描述" onkeydown="if(event.key==='Enter')onFoodSearch()">
+                        <input type="date" class="form-control" id="fFoodStart" title="创建时间起">
+                        <span style="color:#999">至</span>
+                        <input type="date" class="form-control" id="fFoodEnd" title="创建时间止">
+                        <button class="btn btn-primary" onclick="onFoodSearch()"><i class="fas fa-search"></i> 搜索</button>
+                        <button class="btn btn-default" onclick="onFoodReset()"><i class="fas fa-redo"></i> 重置</button>
+                        <span class="list-meta" id="foodMeta"></span>
                     </div>
                     <div class="table-wrapper">
                         <table>
@@ -63,6 +73,15 @@
                     <div class="card-header">
                         <h2>门店列表</h2>
                         <button class="btn btn-primary" onclick="openStoreModal()"><i class="fas fa-plus"></i> 新增门店</button>
+                    </div>
+                    <div class="filter-bar">
+                        <input class="form-control" id="fStoreKeyword" placeholder="搜索门店名称/地址/分类" onkeydown="if(event.key==='Enter')onStoreSearch()">
+                        <input type="date" class="form-control" id="fStoreStart" title="创建时间起">
+                        <span style="color:#999">至</span>
+                        <input type="date" class="form-control" id="fStoreEnd" title="创建时间止">
+                        <button class="btn btn-primary" onclick="onStoreSearch()"><i class="fas fa-search"></i> 搜索</button>
+                        <button class="btn btn-default" onclick="onStoreReset()"><i class="fas fa-redo"></i> 重置</button>
+                        <span class="list-meta" id="storeMeta"></span>
                     </div>
                     <div class="table-wrapper">
                         <table>
@@ -142,7 +161,18 @@ if (!requireAdmin()) throw '';
 renderSidebar();
 
 let foodPage = 1, storePage = 1;
-let stores = [];
+let allStores = [];
+// 两个 Tab 各自的筛选条件；从仪表盘进入（?from=dashboard）时两个 Tab 都带上该时间范围
+let foodFilter = initListFilter('food', { keyword: 'fFoodKeyword', start: 'fFoodStart', end: 'fFoodEnd' });
+let storeFilter = initListFilter('food_store', { keyword: 'fStoreKeyword', start: 'fStoreStart', end: 'fStoreEnd' });
+if (getParam('from') === 'dashboard') {
+    const r = getDashboardRange();
+    storeFilter = { keyword: storeFilter.keyword, start: r.start, end: r.end };
+    document.getElementById('fStoreStart').value = r.start;
+    document.getElementById('fStoreEnd').value = r.end;
+    saveListFilter('food_store', storeFilter);
+}
+renderDashboardBackBanner('food');
 
 function switchTab(tab) {
     document.querySelectorAll('.tab-btn').forEach((b, i) => b.classList.toggle('active', (tab === 'food' ? i === 0 : i === 1)));
@@ -150,18 +180,50 @@ function switchTab(tab) {
     document.getElementById('tabStore').classList.toggle('active', tab === 'store');
 }
 
+function onFoodSearch() {
+    const f = readListFilter('food', { keyword: 'fFoodKeyword', start: 'fFoodStart', end: 'fFoodEnd' });
+    if (!f) return;
+    foodFilter = f;
+    loadFoods(1);
+}
+function onFoodReset() {
+    ['fFoodKeyword', 'fFoodStart', 'fFoodEnd'].forEach(id => document.getElementById(id).value = '');
+    foodFilter = { keyword: '', start: '', end: '' };
+    saveListFilter('food', foodFilter);
+    loadFoods(1);
+}
+function onStoreSearch() {
+    const f = readListFilter('food_store', { keyword: 'fStoreKeyword', start: 'fStoreStart', end: 'fStoreEnd' });
+    if (!f) return;
+    storeFilter = f;
+    loadStores(1);
+}
+function onStoreReset() {
+    ['fStoreKeyword', 'fStoreStart', 'fStoreEnd'].forEach(id => document.getElementById(id).value = '');
+    storeFilter = { keyword: '', start: '', end: '' };
+    saveListFilter('food_store', storeFilter);
+    loadStores(1);
+}
+
 async function loadStores(page) {
     storePage = page || 1;
     document.getElementById('storeBody').innerHTML = '<tr><td colspan="8" class="loading"><i class="fas fa-spinner fa-spin"></i> 加载中...</td></tr>';
-    const data = await api(`/api/food/stores?page=${storePage}&size=10`);
+    const data = await api('/api/admin/food/store/list?' + buildListQuery(storeFilter, storePage));
     if (!data) { document.getElementById('storeBody').innerHTML = '<tr><td colspan="8" class="empty-state">加载失败</td></tr>'; return; }
 
     const list = data.records || data.list || data || [];
-    stores = Array.isArray(data) ? data : list;
-    const total = data.pages || data.totalPages || Math.ceil((data.total || list.length) / 10);
-    updateStoreSelect();
+    const totalCount = data.total || 0;
+    const total = data.pages || data.totalPages || Math.ceil(totalCount / 10);
+    document.getElementById('storeMeta').innerHTML = list.length ? listMetaText(storeFilter, totalCount) : '';
 
-    if (!list.length) { document.getElementById('storeBody').innerHTML = '<tr><td colspan="8" class="empty-state"><i class="fas fa-inbox"></i> 暂无数据</td></tr>'; document.getElementById('storePagination').innerHTML = ''; return; }
+    if (!list.length) {
+        document.getElementById('storePagination').innerHTML = '';
+        renderListEmpty('storeBody', {
+            colspan: 8, total: totalCount, module: 'food_store',
+            onAdd: 'openStoreModal()', onReset: 'onStoreReset()', addText: '新增门店'
+        });
+        return;
+    }
 
     let h = '';
     list.forEach(s => {
@@ -184,22 +246,38 @@ async function loadStores(page) {
     renderPagination('storePagination', storePage, total, 'loadStores');
 }
 
+async function loadAllStoreOptions() {
+    const data = await api('/api/food/stores');
+    if (Array.isArray(data)) { allStores = data; updateStoreSelect(); }
+}
+
 function updateStoreSelect() {
     const sel = document.getElementById('ffStoreId');
     let h = '<option value="">请选择门店</option>';
-    stores.forEach(s => { h += `<option value="${s.id}">${escHtml(s.name)}</option>`; });
+    allStores.forEach(s => { h += `<option value="${s.id}">${escHtml(s.name)}</option>`; });
     sel.innerHTML = h;
 }
 
 async function loadFoods(page) {
     foodPage = page || 1;
     document.getElementById('foodBody').innerHTML = '<tr><td colspan="7" class="loading"><i class="fas fa-spinner fa-spin"></i> 加载中...</td></tr>';
-    const data = await api(`/api/food/list?page=${foodPage}&size=10`);
+    // 门店下拉需要全部门店，与分页列表分开加载
+    if (!allStores.length) await loadAllStoreOptions();
+    const data = await api('/api/admin/food/list?' + buildListQuery(foodFilter, foodPage));
     if (!data) { document.getElementById('foodBody').innerHTML = '<tr><td colspan="7" class="empty-state">加载失败</td></tr>'; return; }
 
     const list = data.records || data.list || data || [];
-    const total = data.pages || data.totalPages || Math.ceil((data.total || list.length) / 10);
-    if (!list.length) { document.getElementById('foodBody').innerHTML = '<tr><td colspan="7" class="empty-state"><i class="fas fa-inbox"></i> 暂无数据</td></tr>'; document.getElementById('foodPagination').innerHTML = ''; return; }
+    const totalCount = data.total || 0;
+    const total = data.pages || data.totalPages || Math.ceil(totalCount / 10);
+    document.getElementById('foodMeta').innerHTML = list.length ? listMetaText(foodFilter, totalCount) : '';
+    if (!list.length) {
+        document.getElementById('foodPagination').innerHTML = '';
+        renderListEmpty('foodBody', {
+            colspan: 7, total: totalCount, module: 'food',
+            onAdd: 'openFoodModal()', onReset: 'onFoodReset()', addText: '新增美食'
+        });
+        return;
+    }
 
     let h = '';
     list.forEach(f => {
@@ -285,7 +363,7 @@ function openStoreModal(item) {
 function closeStoreModal() { document.getElementById('storeModal').classList.remove('active'); }
 
 async function editStore(id) {
-    const data = await api('/api/food/store/detail?id=' + id);
+    const data = await api('/api/food/storeDetail?id=' + id);
     if (data) openStoreModal(data);
 }
 
@@ -303,13 +381,13 @@ async function saveStore() {
     const id = document.getElementById('fsId').value;
     if (id) fields.id = id;
     const params = Object.entries(fields).filter(([,v]) => v !== '').map(([k,v]) => `${k}=${encodeURIComponent(v)}`).join('&');
-    const data = await api('/api/admin/food/store/save?' + params);
-    if (data !== null) { showToast('保存成功'); closeStoreModal(); loadStores(storePage); }
+    const data = await api('/api/admin/food/saveStore?' + params);
+    if (data !== null) { showToast('保存成功'); closeStoreModal(); loadStores(storePage); loadAllStoreOptions(); }
 }
 
 function deleteStore(id) {
     showConfirm('确定要删除该门店吗？', async () => {
-        const data = await api('/api/admin/food/store/delete?id=' + id);
+        const data = await api('/api/admin/food/deleteStore?id=' + id);
         if (data !== null) { showToast('删除成功'); loadStores(storePage); }
     });
 }

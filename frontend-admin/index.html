@@ -37,18 +37,39 @@
             <div class="top-bar-right"><span id="adminName"></span> <a href="#" onclick="doLogout()">退出</a></div>
         </header>
         <div class="content">
-            <div class="stat-grid" id="statGrid">
+            <div class="range-bar">
+                <span class="range-label"><i class="fas fa-calendar-alt"></i> 统计时间范围</span>
+                <div class="range-quick" id="rangeQuick">
+                    <button data-range="7">近7天</button>
+                    <button data-range="30">近30天</button>
+                    <button data-range="90">近90天</button>
+                    <button data-range="365">近一年</button>
+                    <button data-range="all">全部时间</button>
+                    <button data-range="custom">自定义</button>
+                </div>
+                <span class="range-sep">|</span>
+                <input type="date" class="form-control" id="rangeStart">
+                <span class="range-sep">至</span>
+                <input type="date" class="form-control" id="rangeEnd">
+                <button class="btn btn-primary btn-sm" onclick="applyCustomRange()"><i class="fas fa-check"></i> 应用</button>
+                <div class="range-hint">时间范围会自动保存，下钻到列表页及重新打开仪表盘时均保持一致。</div>
+            </div>
+
+            <div class="overview-grid" id="overviewGrid">
                 <div class="loading"><i class="fas fa-spinner fa-spin"></i> 加载中...</div>
             </div>
+
             <div class="card">
                 <div class="card-header"><h2>快捷入口</h2></div>
                 <div style="display:flex;flex-wrap:wrap;gap:12px;">
-                    <a href="spots.html" class="btn btn-primary"><i class="fas fa-map-marker-alt"></i> 景点管理</a>
-                    <a href="routes.html" class="btn btn-info"><i class="fas fa-route"></i> 线路管理</a>
+                    <a href="spots.html" class="btn btn-primary" data-perm-key="spot_manage"><i class="fas fa-map-marker-alt"></i> 景点管理</a>
+                    <a href="routes.html" class="btn btn-info" data-perm-key="route_manage"><i class="fas fa-route"></i> 线路管理</a>
                     <a href="orders.html" class="btn btn-success"><i class="fas fa-shopping-cart"></i> 订单管理</a>
                     <a href="users.html" class="btn btn-warning"><i class="fas fa-users"></i> 用户管理</a>
                     <a href="comments.html" class="btn btn-default"><i class="fas fa-comments"></i> 留言管理</a>
                     <a href="culture.html" class="btn btn-default"><i class="fas fa-book"></i> 文化管理</a>
+                    <a href="hotels.html" class="btn btn-warning" data-perm-key="hotel_manage"><i class="fas fa-hotel"></i> 酒店管理</a>
+                    <a href="foods.html" class="btn btn-danger" data-perm-key="food_manage"><i class="fas fa-utensils"></i> 美食管理</a>
                     <a href="feedbacks.html" class="btn btn-info"><i class="fas fa-bullhorn"></i> 问题反馈</a>
                     <a href="route-review.html" class="btn btn-warning"><i class="fas fa-clipboard-check"></i> 线路审核</a>
                     <a href="spot-review.html" class="btn btn-warning"><i class="fas fa-search-plus"></i> 景点审核</a>
@@ -64,28 +85,143 @@
 if (!requireAdmin()) throw '';
 renderSidebar();
 
-const statConfig = [
-    { key: 'userCount', label: '用户总数', icon: 'fas fa-users', color: '#1890ff' },
-    { key: 'spotCount', label: '景点总数', icon: 'fas fa-map-marker-alt', color: '#C41A1A' },
-    { key: 'routeCount', label: '线路总数', icon: 'fas fa-route', color: '#52c41a' },
-    { key: 'cultureCount', label: '文化内容', icon: 'fas fa-book', color: '#722ed1' },
-    { key: 'hotelCount', label: '酒店总数', icon: 'fas fa-hotel', color: '#faad14' },
-    { key: 'foodCount', label: '美食总数', icon: 'fas fa-utensils', color: '#eb2f96' },
-    { key: 'orderCount', label: '订单总数', icon: 'fas fa-shopping-cart', color: '#13c2c2' }
+if (getParam('from') === 'list') {
+    showToast('已返回仪表盘，时间范围保持不变');
+    history.replaceState(null, '', 'index.html');
+}
+
+const MODULE_CARDS = [
+    { module: 'spot',  title: '景点', icon: 'fas fa-map-marker-alt', color: '#C41A1A', permKey: 'spot_manage' },
+    { module: 'route', title: '线路', icon: 'fas fa-route',         color: '#52c41a', permKey: 'route_manage' },
+    { module: 'hotel', title: '酒店', icon: 'fas fa-hotel',         color: '#faad14', permKey: 'hotel_manage' },
+    { module: 'food',  title: '美食', icon: 'fas fa-utensils',      color: '#eb2f96', permKey: 'food_manage' }
 ];
 
-(async function() {
-    const data = await api('/api/admin/stats/dashboard');
-    if (!data) { document.getElementById('statGrid').innerHTML = '<div class="empty-state"><i class="fas fa-chart-bar"></i>暂无数据</div>'; return; }
+function fmtDate(d) {
+    const pad = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** 计算快捷范围；all/custom 分别表示全部时间与自定义 */
+function calcPreset(name) {
+    if (name === 'all' || name === 'custom') return { start: '', end: '' };
+    const days = parseInt(name);
+    const end = new Date();
+    const start = new Date();
+    start.setDate(start.getDate() - (days - 1));
+    return { start: fmtDate(start), end: fmtDate(end) };
+}
+
+let currentRange = getDashboardRange();
+
+/** 根据保存的范围判断快捷按钮高亮 */
+function syncQuickButtons() {
+    document.querySelectorAll('#rangeQuick button').forEach(b => b.classList.remove('active'));
+    const { start, end } = currentRange;
+    if (!start && !end) {
+        const btn = document.querySelector('#rangeQuick button[data-range="all"]');
+        if (btn) btn.classList.add('active');
+        return;
+    }
+    for (const name of ['7', '30', '90', '365']) {
+        const p = calcPreset(name);
+        if (p.start === start && p.end === end) {
+            const btn = document.querySelector(`#rangeQuick button[data-range="${name}"]`);
+            if (btn) btn.classList.add('active');
+            return;
+        }
+    }
+    const btn = document.querySelector('#rangeQuick button[data-range="custom"]');
+    if (btn) btn.classList.add('active');
+}
+
+function refreshRangeInputs() {
+    document.getElementById('rangeStart').value = currentRange.start || '';
+    document.getElementById('rangeEnd').value = currentRange.end || '';
+    syncQuickButtons();
+}
+
+function applyRange(range, reload = true) {
+    if (range.start && range.end && range.start > range.end) {
+        showToast('开始日期不能晚于结束日期', 'warning');
+        return;
+    }
+    currentRange = { start: range.start || '', end: range.end || '' };
+    setDashboardRange(currentRange.start, currentRange.end);
+    refreshRangeInputs();
+    if (reload) loadOverview();
+}
+
+function applyCustomRange() {
+    const start = document.getElementById('rangeStart').value;
+    const end = document.getElementById('rangeEnd').value;
+    applyRange({ start, end });
+}
+
+document.getElementById('rangeQuick').addEventListener('click', e => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    const name = btn.getAttribute('data-range');
+    if (name === 'custom') {
+        syncQuickButtons();
+        document.getElementById('rangeStart').focus();
+        return;
+    }
+    applyRange(calcPreset(name));
+});
+
+async function loadOverview() {
+    const grid = document.getElementById('overviewGrid');
+    grid.innerHTML = '<div class="loading"><i class="fas fa-spinner fa-spin"></i> 加载中...</div>';
+    const q = new URLSearchParams();
+    if (currentRange.start) q.set('startDate', currentRange.start);
+    if (currentRange.end) q.set('endDate', currentRange.end);
+    const data = await api('/api/admin/stats/overviewAll?' + q.toString());
+    if (!data) {
+        grid.innerHTML = '<div class="empty-state"><i class="fas fa-chart-bar"></i>统计数据加载失败</div>';
+        return;
+    }
     let h = '';
-    statConfig.forEach(s => {
-        h += `<div class="stat-card">
-            <div class="stat-icon" style="background:${s.color}"><i class="${s.icon}"></i></div>
-            <div class="stat-info"><h3>${data[s.key] ?? 0}</h3><p>${s.label}</p></div>
+    MODULE_CARDS.forEach(c => {
+        const d = data[c.module] || {};
+        const u = getUser();
+        const permVisible = !u || u.role === 'ADMIN'; // 工作人员由 applyRoleMenuVisibility 异步显隐
+        const total = d.total ?? 0;
+        const rangeCount = d.rangeCount ?? 0;
+        const previousCount = d.previousCount ?? 0;
+        let trendClass = 'trend-flat', trendIcon = 'fa-minus', trendText = '持平';
+        if (rangeCount > previousCount) { trendClass = 'trend-up'; trendIcon = 'fa-arrow-up'; trendText = '新增'; }
+        else if (rangeCount < previousCount) { trendClass = 'trend-down'; trendIcon = 'fa-arrow-down'; trendText = '减少'; }
+        let rangeLabel;
+        if (!currentRange.start && !currentRange.end) rangeLabel = '全部时间';
+        else rangeLabel = (currentRange.start || '最早') + ' ~ ' + (currentRange.end || '至今');
+        const deltaText = (!currentRange.start && !currentRange.end)
+            ? `全部时间共收录 <b>${total}</b> 条`
+            : `所选范围新增 <b>${rangeCount}</b> 条，上一周期 ${previousCount} 条`;
+        h += `<div class="overview-card" data-perm-key="${c.permKey}"${permVisible ? '' : ' style="display:none"'} onclick="drillToList('${c.module}')" title="点击查看明细列表">
+            <div class="oc-go"><i class="fas fa-chevron-right"></i></div>
+            <div class="oc-head">
+                <div class="oc-icon" style="background:${c.color}"><i class="${c.icon}"></i></div>
+                <div class="oc-title">${c.title}总览</div>
+            </div>
+            <div class="oc-body">
+                <div class="oc-total">${total}<small>总数</small></div>
+                <div class="oc-delta">
+                    <span class="trend ${trendClass}"><i class="fas ${trendIcon}"></i> ${trendText}</span>
+                    ${rangeCount} 条
+                </div>
+            </div>
+            <div class="oc-foot"><i class="fas fa-calendar"></i> ${rangeLabel} · ${deltaText}<br>
+                <i class="fas fa-hand-pointer"></i> 点击卡片下钻到${c.title}管理列表</div>
         </div>`;
     });
-    document.getElementById('statGrid').innerHTML = h;
-})();
+    grid.innerHTML = h;
+    // data-perm-key 元素的显隐依赖权限接口；applyRoleMenuVisibility 已执行时需要重放一次
+    applyRoleMenuVisibility();
+}
+
+refreshRangeInputs();
+loadOverview();
 </script>
 </body>
 </html>

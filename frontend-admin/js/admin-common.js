@@ -32,6 +32,165 @@ function getParam(key) {
     return new URLSearchParams(location.search).get(key);
 }
 
+/* ==================== 仪表盘时间范围 / 列表筛选 共享逻辑 ==================== */
+
+const DASH_RANGE_KEY = 'admin.dashboard.range';
+const LIST_FILTER_KEY_PREFIX = 'admin.listFilter.';
+// 仪表盘四个数据块与列表页的映射
+const OVERVIEW_MODULES = {
+    spot:  { page: 'spots.html',  label: '景点', addText: '新增景点' },
+    route: { page: 'routes.html', label: '线路', addText: '新增线路' },
+    hotel: { page: 'hotels.html', label: '酒店', addText: '新增酒店' },
+    food:  { page: 'foods.html',  label: '美食', addText: '新增美食' }
+};
+
+function getDashboardRange() {
+    try {
+        const r = JSON.parse(localStorage.getItem(DASH_RANGE_KEY));
+        if (r && typeof r === 'object') return { start: r.start || '', end: r.end || '' };
+    } catch {}
+    return { start: '', end: '' };
+}
+
+function setDashboardRange(start, end) {
+    localStorage.setItem(DASH_RANGE_KEY, JSON.stringify({ start: start || '', end: end || '' }));
+}
+
+/** 从仪表盘下钻到列表页，时间范围通过 URL 传递（返回仪表盘时范围从 localStorage 恢复） */
+function drillToList(module) {
+    const cfg = OVERVIEW_MODULES[module];
+    if (!cfg) return;
+    const r = getDashboardRange();
+    const params = new URLSearchParams();
+    if (r.start) params.set('start', r.start);
+    if (r.end) params.set('end', r.end);
+    params.set('from', 'dashboard');
+    location.href = cfg.page + '?' + params.toString();
+}
+
+/**
+ * 读取列表页当前筛选条件：
+ * 优先 URL 参数（仪表盘下钻），其次上次在列表页使用的条件。
+ * 返回 { keyword, start, end }
+ */
+function resolveListFilter(module) {
+    const urlKeyword = getParam('keyword') || '';
+    const urlStart = getParam('start') || '';
+    const urlEnd = getParam('end') || '';
+    if (getParam('from') === 'dashboard' || urlStart || urlEnd || urlKeyword) {
+        return { keyword: urlKeyword, start: urlStart, end: urlEnd, fromUrl: true };
+    }
+    try {
+        const saved = JSON.parse(localStorage.getItem(LIST_FILTER_KEY_PREFIX + module));
+        if (saved && typeof saved === 'object') {
+            return { keyword: saved.keyword || '', start: saved.start || '', end: saved.end || '', fromUrl: false };
+        }
+    } catch {}
+    return { keyword: '', start: '', end: '', fromUrl: false };
+}
+
+function saveListFilter(module, filter) {
+    localStorage.setItem(LIST_FILTER_KEY_PREFIX + module, JSON.stringify({
+        keyword: filter.keyword || '', start: filter.start || '', end: filter.end || ''
+    }));
+}
+
+/** 初始化列表页筛选条（关键字 + 时间范围），并把值回填到输入框；返回当前筛选条件 */
+function initListFilter(module, inputIds) {
+    const ids = Object.assign({ keyword: 'fKeyword', start: 'fStart', end: 'fEnd' }, inputIds || {});
+    const filter = resolveListFilter(module);
+    const kwEl = document.getElementById(ids.keyword);
+    const startEl = document.getElementById(ids.start);
+    const endEl = document.getElementById(ids.end);
+    if (kwEl) kwEl.value = filter.keyword;
+    if (startEl) startEl.value = filter.start;
+    if (endEl) endEl.value = filter.end;
+    return filter;
+}
+
+/** 从筛选条读取输入并持久化 */
+function readListFilter(module, inputIds) {
+    const ids = Object.assign({ keyword: 'fKeyword', start: 'fStart', end: 'fEnd' }, inputIds || {});
+    const filter = {
+        keyword: (document.getElementById(ids.keyword) || {}).value?.trim() || '',
+        start: (document.getElementById(ids.start) || {}).value || '',
+        end: (document.getElementById(ids.end) || {}).value || ''
+    };
+    if (filter.start && filter.end && filter.start > filter.end) {
+        showToast('开始日期不能晚于结束日期', 'warning');
+        return null;
+    }
+    saveListFilter(module, filter);
+    return filter;
+}
+
+function buildListQuery(filter, page, extra) {
+    const params = new URLSearchParams(Object.assign({ page: page || 1, size: 10 }, extra || {}));
+    if (filter.keyword) params.set('keyword', filter.keyword);
+    if (filter.start) params.set('startDate', filter.start);
+    if (filter.end) params.set('endDate', filter.end);
+    return params.toString();
+}
+
+/** 列表“共 X 条 / 筛选命中 X 条”文案；筛选条件与仪表盘下钻口径一致 */
+function listMetaText(filter, matchedCount) {
+    return isFiltered(filter)
+        ? `筛选命中 <b>${matchedCount}</b> 条（时间范围/关键字与仪表盘一致）`
+        : `共 <b>${matchedCount}</b> 条`;
+}
+
+function isFiltered(filter) {
+    return !!(filter.keyword || filter.start || filter.end);
+}
+
+/**
+ * 渲染列表空态：
+ * - 全部数据为 0（明细尚未生成）：说明情况 + 补充数据入口（新增按钮）
+ * - 仅筛选结果为空：提示调整筛选条件 + 清除筛选
+ * @param host        容器元素或 id
+ * @param opts        { colspan, total, module, onAdd, onReset, addText }
+ */
+function renderListEmpty(host, opts) {
+    const el = typeof host === 'string' ? document.getElementById(host) : host;
+    if (!el) return;
+    const addText = (opts.addText || '新增数据');
+    if (!opts.total) {
+        el.innerHTML = `<tr><td colspan="${opts.colspan}">
+            <div class="empty-state">
+                <i class="fas fa-folder-open"></i>
+                <p>该模块的明细数据尚未生成，仪表盘统计暂无内容可展示</p>
+                <div style="margin-top:14px">
+                    <button class="btn btn-primary btn-sm" onclick="${opts.onAdd}"><i class="fas fa-plus"></i> ${escHtml(addText)}</button>
+                </div>
+            </div></td></tr>`;
+    } else {
+        el.innerHTML = `<tr><td colspan="${opts.colspan}">
+            <div class="empty-state">
+                <i class="fas fa-inbox"></i>
+                <p>没有符合当前关键字或时间范围的数据</p>
+                <p style="font-size:12px;color:#bbb">可调整检索条件，或清除筛选查看全部数据</p>
+                <div style="margin-top:14px">
+                    <button class="btn btn-default btn-sm" onclick="${opts.onReset}"><i class="fas fa-redo"></i> 清除筛选条件</button>
+                </div>
+            </div></td></tr>`;
+    }
+}
+
+/** 渲染“返回仪表盘”入口条；从仪表盘下钻进入时才显示 */
+function renderDashboardBackBanner(module) {
+    if (getParam('from') !== 'dashboard') return;
+    const r = getDashboardRange();
+    let rangeText = '全部时间';
+    if (r.start || r.end) rangeText = (r.start || '最早') + ' ~ ' + (r.end || '至今');
+    const bar = document.getElementById('dashboardBackBar');
+    if (bar) {
+        bar.classList.add('back-bar');
+        bar.innerHTML = `<a href="index.html?from=list" class="back-link"><i class="fas fa-arrow-left"></i> 返回仪表盘</a>
+            <span class="back-range"><i class="fas fa-clock"></i> 仪表盘时间范围：${escHtml(rangeText)}（返回后保留）</span>`;
+        bar.style.display = '';
+    }
+}
+
 function saveUser(u) {
     localStorage.setItem('user', JSON.stringify(u));
 }
@@ -170,6 +329,11 @@ async function applyRoleMenuVisibility() {
         if (link.classList.contains('btn')) {
             link.style.display = allowed.has(menuKey) ? '' : 'none';
         }
+    });
+
+    // 带 data-perm-key 的元素（如仪表盘数据总览卡片）按菜单权限显隐
+    document.querySelectorAll('[data-perm-key]').forEach(el => {
+        el.style.display = allowed.has(el.getAttribute('data-perm-key')) ? '' : 'none';
     });
 
     const page = location.pathname.split('/').pop() || 'index.html';
