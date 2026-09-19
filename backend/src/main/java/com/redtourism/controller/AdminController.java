@@ -145,6 +145,9 @@ public class AdminController {
     @GetMapping("/spot/list")
     public Result<IPage<ScenicSpot>> spotList(@RequestParam(defaultValue = "1") int page,
                                                @RequestParam(defaultValue = "10") int size,
+                                               @RequestParam(required = false) String keyword,
+                                               @RequestParam(required = false) String startDate,
+                                               @RequestParam(required = false) String endDate,
                                                HttpSession session) {
         User operator = (User) session.getAttribute(Constants.SESSION_USER);
         if (operator == null) return Result.error(401, "请先登录");
@@ -152,8 +155,108 @@ public class AdminController {
         if (isStaff(operator)) {
             w.eq(ScenicSpot::getStaffId, operator.getId());
         }
+        if (keyword != null && !keyword.trim().isEmpty()) {
+            String kw = keyword.trim();
+            w.and(qw -> qw.like(ScenicSpot::getName, kw)
+                    .or().like(ScenicSpot::getRegion, kw)
+                    .or().like(ScenicSpot::getTheme, kw)
+                    .or().like(ScenicSpot::getLocation, kw));
+        }
+        applyDateRange(w, startDate, endDate, ScenicSpot::getCreateTime);
         w.orderByDesc(ScenicSpot::getCreateTime);
         return Result.success(spotService.page(new Page<>(page, size), w));
+    }
+
+    // ==================== 线路 / 酒店 / 美食 管理端列表（支持关键字检索、时间范围下钻、翻页） ====================
+
+    @GetMapping("/route/list")
+    public Result<IPage<Route>> adminRouteList(@RequestParam(defaultValue = "1") int page,
+                                                @RequestParam(defaultValue = "10") int size,
+                                                @RequestParam(required = false) String keyword,
+                                                @RequestParam(required = false) String startDate,
+                                                @RequestParam(required = false) String endDate) {
+        LambdaQueryWrapper<Route> w = new LambdaQueryWrapper<>();
+        if (keyword != null && !keyword.trim().isEmpty()) {
+            String kw = keyword.trim();
+            w.and(qw -> qw.like(Route::getName, kw)
+                    .or().like(Route::getDescription, kw)
+                    .or().like(Route::getTheme, kw));
+        }
+        applyDateRange(w, startDate, endDate, Route::getCreateTime);
+        w.orderByDesc(Route::getCreateTime);
+        return Result.success(routeService.page(new Page<>(page, size), w));
+    }
+
+    @GetMapping("/hotel/list")
+    public Result<IPage<Hotel>> adminHotelList(@RequestParam(defaultValue = "1") int page,
+                                                @RequestParam(defaultValue = "10") int size,
+                                                @RequestParam(required = false) String keyword,
+                                                @RequestParam(required = false) String startDate,
+                                                @RequestParam(required = false) String endDate) {
+        LambdaQueryWrapper<Hotel> w = new LambdaQueryWrapper<>();
+        if (keyword != null && !keyword.trim().isEmpty()) {
+            String kw = keyword.trim();
+            w.and(qw -> qw.like(Hotel::getName, kw)
+                    .or().like(Hotel::getLocation, kw));
+        }
+        applyDateRange(w, startDate, endDate, Hotel::getCreateTime);
+        w.orderByDesc(Hotel::getCreateTime);
+        return Result.success(hotelService.page(new Page<>(page, size), w));
+    }
+
+    @GetMapping("/food/list")
+    public Result<IPage<Food>> adminFoodList(@RequestParam(defaultValue = "1") int page,
+                                              @RequestParam(defaultValue = "10") int size,
+                                              @RequestParam(required = false) String keyword,
+                                              @RequestParam(required = false) String startDate,
+                                              @RequestParam(required = false) String endDate) {
+        LambdaQueryWrapper<Food> w = new LambdaQueryWrapper<>();
+        if (keyword != null && !keyword.trim().isEmpty()) {
+            String kw = keyword.trim();
+            w.and(qw -> qw.like(Food::getName, kw)
+                    .or().like(Food::getDescription, kw)
+                    .or().like(Food::getCategory, kw));
+        }
+        applyDateRange(w, startDate, endDate, Food::getCreateTime);
+        w.orderByDesc(Food::getCreateTime);
+        IPage<Food> result = foodService.page(new Page<>(page, size), w);
+        List<FoodStore> stores = foodService.listStores(null);
+        Map<Long, String> storeNameMap = new HashMap<>();
+        for (FoodStore store : stores) storeNameMap.put(store.getId(), store.getName());
+        result.getRecords().forEach(f -> {
+            if (f.getStoreId() != null) f.setStoreName(storeNameMap.get(f.getStoreId()));
+        });
+        return Result.success(result);
+    }
+
+    /**
+     * 按 yyyy-MM-dd 字符串过滤 createTime：startDate 含当天 00:00:00，endDate 含当天 23:59:59。
+     */
+    private <T> void applyDateRange(LambdaQueryWrapper<T> wrapper, String startDate, String endDate,
+                                    com.baomidou.mybatisplus.core.toolkit.support.SFunction<T, ?> column) {
+        Date start = parseDateStart(startDate);
+        Date end = parseDateEnd(endDate);
+        if (start != null) wrapper.ge(column, start);
+        if (end != null) wrapper.le(column, end);
+    }
+
+    private Date parseDateStart(String date) {
+        if (date == null || date.trim().isEmpty()) return null;
+        try {
+            return java.sql.Timestamp.valueOf(java.time.LocalDate.parse(date.trim()).atStartOfDay());
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private Date parseDateEnd(String date) {
+        if (date == null || date.trim().isEmpty()) return null;
+        try {
+            return java.sql.Timestamp.valueOf(
+                    java.time.LocalDate.parse(date.trim()).atTime(java.time.LocalTime.MAX));
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     @GetMapping("/spot/save")
@@ -746,15 +849,82 @@ public class AdminController {
     // ==================== 数据统计 ====================
 
     @GetMapping("/stats/dashboard")
-    public Result<Map<String, Object>> dashboard() {
+    public Result<Map<String, Object>> dashboard(HttpSession session) {
+        User operator = (User) session.getAttribute(Constants.SESSION_USER);
         Map<String, Object> stats = new HashMap<>();
         stats.put("userCount", userService.count());
-        stats.put("spotCount", spotService.count());
+        // 工作人员只统计其负责的景点，与景点列表总数保持一致
+        stats.put("spotCount", countSpots(operator));
         stats.put("routeCount", routeService.count());
         stats.put("cultureCount", cultureService.count());
         stats.put("hotelCount", hotelService.count());
         stats.put("foodCount", foodService.count());
         stats.put("orderCount", orderService.count());
         return Result.success(stats);
+    }
+
+    /**
+     * 仪表盘「数据总览」：景点 / 线路 / 酒店 / 美食分块数据。
+     * 每块返回累计总数、近 7/30/90 天新增数，以及与上一周期相比的增减（delta7/30/90）。
+     * 口径与管理端列表完全一致（工作人员仅统计自己负责的景点）。
+     */
+    @GetMapping("/stats/overview")
+    public Result<Map<String, Object>> statsOverview(HttpSession session) {
+        User operator = (User) session.getAttribute(Constants.SESSION_USER);
+        java.util.function.Supplier<LambdaQueryWrapper<ScenicSpot>> spotBase =
+                () -> isStaff(operator)
+                        ? new LambdaQueryWrapper<ScenicSpot>().eq(ScenicSpot::getStaffId, operator.getId())
+                        : new LambdaQueryWrapper<>();
+        Map<String, Object> data = new HashMap<>();
+        data.put("spot", buildOverview(spotService, ScenicSpot::getCreateTime, spotBase));
+        data.put("route", buildOverview(routeService, Route::getCreateTime, () -> new LambdaQueryWrapper<>()));
+        data.put("hotel", buildOverview(hotelService, Hotel::getCreateTime, () -> new LambdaQueryWrapper<>()));
+        data.put("food", buildOverview(foodService, Food::getCreateTime, () -> new LambdaQueryWrapper<>()));
+        return Result.success(data);
+    }
+
+    private long countSpots(User operator) {
+        LambdaQueryWrapper<ScenicSpot> w = new LambdaQueryWrapper<>();
+        if (isStaff(operator)) {
+            w.eq(ScenicSpot::getStaffId, operator.getId());
+        }
+        return spotService.count(w);
+    }
+
+    private <T> Map<String, Object> buildOverview(
+            com.baomidou.mybatisplus.extension.service.IService<T> service,
+            com.baomidou.mybatisplus.core.toolkit.support.SFunction<T, ?> createTimeColumn,
+            java.util.function.Supplier<LambdaQueryWrapper<T>> baseSupplier) {
+        Map<String, Object> block = new HashMap<>();
+        block.put("total", service.count(baseSupplier.get()));
+        for (int days : new int[]{7, 30, 90}) {
+            Date currentStart = daysAgoStart(days);
+            Date previousStart = daysAgoStart(days * 2);
+
+            LambdaQueryWrapper<T> currentWrapper = baseSupplier.get();
+            currentWrapper.ge(createTimeColumn, currentStart);
+            long current = service.count(currentWrapper);
+
+            LambdaQueryWrapper<T> previousWrapper = baseSupplier.get();
+            previousWrapper.ge(createTimeColumn, previousStart).lt(createTimeColumn, currentStart);
+            long previous = service.count(previousWrapper);
+
+            block.put("recent" + days, current);
+            block.put("delta" + days, current - previous);
+        }
+        return block;
+    }
+
+    /**
+     * 返回 N 天前当地时间 00:00:00（N=1 即今天 00:00）。
+     */
+    private Date daysAgoStart(int n) {
+        java.util.Calendar c = java.util.Calendar.getInstance();
+        c.add(java.util.Calendar.DAY_OF_MONTH, -(n - 1));
+        c.set(java.util.Calendar.HOUR_OF_DAY, 0);
+        c.set(java.util.Calendar.MINUTE, 0);
+        c.set(java.util.Calendar.SECOND, 0);
+        c.set(java.util.Calendar.MILLISECOND, 0);
+        return c.getTime();
     }
 }

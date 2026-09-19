@@ -37,6 +37,27 @@
             <div class="top-bar-right"><span id="adminName"></span> <a href="#" onclick="doLogout()">退出</a></div>
         </header>
         <div class="content">
+            <!-- 数据总览：时间范围全局生效，点击分块下钻到对应管理列表 -->
+            <div class="card overview-card">
+                <div class="card-header">
+                    <h2><i class="fas fa-chart-pie"></i> 数据总览</h2>
+                    <div class="overview-toolbar">
+                        <label class="filter-label"><i class="far fa-clock"></i> 时间范围</label>
+                        <select class="form-control" id="overviewRange">
+                            <option value="7">近7天</option>
+                            <option value="30">近30天</option>
+                            <option value="90">近90天</option>
+                            <option value="all">全部</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="overview-grid" id="overviewGrid">
+                    <div class="overview-loading" style="grid-column:1/-1"><i class="fas fa-spinner fa-spin"></i> 加载中...</div>
+                </div>
+                <p class="overview-tip"><i class="fas fa-info-circle"></i> 分块展示累计总数与所选时间范围内的新增变化，点击分块可携带时间范围下钻到对应管理列表；返回仪表盘或重新打开时将保留上次选择的时间范围。</p>
+            </div>
+
+            <h2 class="section-title">平台概览</h2>
             <div class="stat-grid" id="statGrid">
                 <div class="loading"><i class="fas fa-spinner fa-spin"></i> 加载中...</div>
             </div>
@@ -49,6 +70,8 @@
                     <a href="users.html" class="btn btn-warning"><i class="fas fa-users"></i> 用户管理</a>
                     <a href="comments.html" class="btn btn-default"><i class="fas fa-comments"></i> 留言管理</a>
                     <a href="culture.html" class="btn btn-default"><i class="fas fa-book"></i> 文化管理</a>
+                    <a href="hotels.html" class="btn btn-default"><i class="fas fa-hotel"></i> 酒店管理</a>
+                    <a href="foods.html" class="btn btn-default"><i class="fas fa-utensils"></i> 美食管理</a>
                     <a href="feedbacks.html" class="btn btn-info"><i class="fas fa-bullhorn"></i> 问题反馈</a>
                     <a href="route-review.html" class="btn btn-warning"><i class="fas fa-clipboard-check"></i> 线路审核</a>
                     <a href="spot-review.html" class="btn btn-warning"><i class="fas fa-search-plus"></i> 景点审核</a>
@@ -64,6 +87,7 @@
 if (!requireAdmin()) throw '';
 renderSidebar();
 
+// ---------- 平台概览 ----------
 const statConfig = [
     { key: 'userCount', label: '用户总数', icon: 'fas fa-users', color: '#1890ff' },
     { key: 'spotCount', label: '景点总数', icon: 'fas fa-map-marker-alt', color: '#C41A1A' },
@@ -86,6 +110,90 @@ const statConfig = [
     });
     document.getElementById('statGrid').innerHTML = h;
 })();
+
+// ---------- 数据总览 ----------
+const overviewConfig = [
+    { key: 'spot',  label: '景点', page: 'spots.html',  icon: 'fas fa-map-marker-alt', color: '#C41A1A', menuKey: 'spot_manage' },
+    { key: 'route', label: '线路', page: 'routes.html', icon: 'fas fa-route',          color: '#52c41a', menuKey: 'route_manage' },
+    { key: 'hotel', label: '酒店', page: 'hotels.html', icon: 'fas fa-hotel',          color: '#faad14', menuKey: 'hotel_manage' },
+    { key: 'food',  label: '美食', page: 'foods.html',  icon: 'fas fa-utensils',       color: '#eb2f96', menuKey: 'food_manage' }
+];
+
+let overviewData = null;
+let overviewMenuKeys = null; // null=管理员（全部可见）；Set=工作人员允许的菜单
+
+/* 与侧边栏菜单权限同源：工作人员只展示其有权进入的管理模块 */
+(async function initOverviewMenus() {
+    const u = getUser();
+    if (!u || u.role === 'ADMIN') { overviewMenuKeys = null; return; }
+    overviewMenuKeys = new Set(['dashboard', 'spot_manage']);
+    const roleMenus = await api('/api/admin/role/menu/list?roleCode=' + encodeURIComponent(u.role));
+    if (Array.isArray(roleMenus)) {
+        overviewMenuKeys = new Set(
+            roleMenus.filter(m => m && Number(m.enabled) === 1 && m.menuKey).map(m => m.menuKey)
+        );
+        if (!overviewMenuKeys.size) overviewMenuKeys = new Set(['dashboard', 'spot_manage']);
+    }
+    if (overviewData) renderOverview();
+})();
+
+function deltaHtml(delta) {
+    if (delta > 0) return `<span class="trend trend-up"><i class="fas fa-arrow-up"></i> ${delta}</span>`;
+    if (delta < 0) return `<span class="trend trend-down"><i class="fas fa-arrow-down"></i> ${Math.abs(delta)}</span>`;
+    return `<span class="trend trend-flat"><i class="fas fa-minus"></i> 0</span>`;
+}
+
+function renderOverview() {
+    const grid = document.getElementById('overviewGrid');
+    if (!overviewData) {
+        grid.innerHTML = '<div class="empty-state"><i class="fas fa-chart-pie"></i>暂无数据</div>';
+        return;
+    }
+    const range = getDashRange();
+    const visible = overviewConfig.filter(c => !overviewMenuKeys || overviewMenuKeys.has(c.menuKey));
+    if (!visible.length) {
+        grid.innerHTML = '<div class="empty-state"><i class="fas fa-lock"></i>暂无可查看的模块，请联系管理员配置菜单权限</div>';
+        return;
+    }
+    grid.style.gridTemplateColumns = `repeat(${Math.min(visible.length, 4)}, 1fr)`;
+    grid.innerHTML = visible.map(c => {
+        const d = overviewData[c.key] || {};
+        const total = d.total ?? 0;
+        const isAll = range === 'all';
+        const recent = isAll ? total : (d['recent' + range] ?? 0);
+        const delta = isAll ? null : (d['delta' + range] ?? 0);
+        const recentLabel = isAll ? '全部累计' : dashRangeLabel(range) + '新增';
+        const trend = delta === null ? '' :
+            `<div class="overview-delta">较上一周期 ${deltaHtml(delta)}</div>`;
+        return `<div class="overview-block" onclick="drillToList('${c.key}', '${range}')" title="按${isAll ? '全部时间' : recentLabel}下钻到${c.label}管理列表">
+            <div class="overview-head">
+                <div class="stat-icon" style="background:${c.color}"><i class="${c.icon}"></i></div>
+                <div class="overview-name">${c.label}<span class="overview-total">总数 <b>${total}</b></span></div>
+            </div>
+            <div class="overview-numbers">
+                <div class="overview-recent"><span class="num">${recent}</span><span class="sub">${recentLabel}</span></div>
+                ${trend}
+            </div>
+            <div class="overview-drill"><i class="fas fa-list-ul"></i> 查看明细 <i class="fas fa-chevron-right drill-arrow"></i></div>
+        </div>`;
+    }).join('');
+}
+
+async function loadOverview() {
+    document.getElementById('overviewGrid').innerHTML =
+        '<div class="overview-loading" style="grid-column:1/-1"><i class="fas fa-spinner fa-spin"></i> 加载中...</div>';
+    overviewData = await api('/api/admin/stats/overview');
+    renderOverview();
+}
+
+const rangeSelect = document.getElementById('overviewRange');
+rangeSelect.value = getDashRange();
+rangeSelect.addEventListener('change', () => {
+    setDashRange(rangeSelect.value);
+    renderOverview();
+});
+
+loadOverview();
 </script>
 </body>
 </html>

@@ -32,6 +32,137 @@ function getParam(key) {
     return new URLSearchParams(location.search).get(key);
 }
 
+/* ==================== 仪表盘数据总览：时间范围 / 下钻 ==================== */
+
+const DASH_RANGE_OPTIONS = [
+    { value: '7',    label: '近7天' },
+    { value: '30',   label: '近30天' },
+    { value: '90',   label: '近90天' },
+    { value: 'all',  label: '全部' }
+];
+
+const DASH_RANGE_STORAGE = 'dashRange';
+
+function getDashRange() {
+    const r = localStorage.getItem(DASH_RANGE_STORAGE);
+    return DASH_RANGE_OPTIONS.some(o => o.value === r) ? r : '7';
+}
+
+function setDashRange(range) {
+    if (DASH_RANGE_OPTIONS.some(o => o.value === range)) localStorage.setItem(DASH_RANGE_STORAGE, range);
+}
+
+function dashRangeLabel(range) {
+    const o = DASH_RANGE_OPTIONS.find(x => x.value === String(range));
+    return o ? o.label : '近7天';
+}
+
+/**
+ * 相对天数 => [yyyy-MM-dd, yyyy-MM-dd]（本地时区，含今天）。
+ * 与后端近 N 天口径一致（N=7 时从 6 天前 00:00 到今天 23:59:59）。
+ */
+function rangeToDates(days) {
+    const d = parseInt(days, 10);
+    if (!d || d <= 0) return ['', ''];
+    const pad = n => String(n).padStart(2, '0');
+    const fmt = x => `${x.getFullYear()}-${pad(x.getMonth() + 1)}-${pad(x.getDate())}`;
+    const end = new Date();
+    const start = new Date();
+    start.setDate(end.getDate() - (d - 1));
+    return [fmt(start), fmt(end)];
+}
+
+/** 仪表盘分块 → 对应管理列表页 */
+const DASH_PAGES = {
+    spot:  'spots.html',
+    route: 'routes.html',
+    hotel: 'hotels.html',
+    food:  'foods.html'
+};
+
+/**
+ * 跳转到下钻列表页，携带 type 与时间范围；列表页会自行持久化，
+ * 返回仪表盘时仪表盘再从 localStorage 读取，从而保留原时间范围。
+ */
+function drillToList(type, range) {
+    const page = DASH_PAGES[type];
+    if (!page) return;
+    if (range) setDashRange(range);
+    const params = new URLSearchParams();
+    params.set('from', 'dashboard');
+    if (range) params.set('range', range || getDashRange());
+    location.href = page + '?' + params.toString();
+}
+
+/**
+ * 列表页初始化时间范围：优先 URL 参数（来自仪表盘下钻），其次上次使用值，默认近7天。
+ * 同时写回 localStorage，保证重新打开仍保留。
+ */
+function initListRange(pageType) {
+    const fromUrl = getParam('range');
+    const key = 'dashRange:' + pageType;
+    let range = fromUrl || localStorage.getItem(key) || getDashRange();
+    if (!DASH_RANGE_OPTIONS.some(o => o.value === range)) range = '7';
+    localStorage.setItem(key, range);
+    return range;
+}
+
+function saveListRange(pageType, range) {
+    localStorage.setItem('dashRange:' + pageType, range);
+}
+
+function buildListQuery(pageType, page, size, extra) {
+    const range = localStorage.getItem('dashRange:' + pageType) || '7';
+    const params = new URLSearchParams();
+    params.set('page', page);
+    params.set('size', size);
+    if (extra && extra.keyword) params.set('keyword', extra.keyword);
+    if (range !== 'all') {
+        const [startDate, endDate] = rangeToDates(range);
+        params.set('startDate', startDate);
+        params.set('endDate', endDate);
+    }
+    return params.toString();
+}
+
+/** 列表页时间范围下拉 + 关键字检索工具栏 */
+function renderListFilterBar(containerId, opts) {
+    const el = document.getElementById(containerId);
+    if (!el) return;
+    el.innerHTML = `
+        <div class="filter-bar">
+            <a href="index.html" class="btn btn-default btn-sm" title="返回仪表盘（保留时间范围）"><i class="fas fa-arrow-left"></i> 返回仪表盘</a>
+            <span class="filter-divider"></span>
+            <label class="filter-label"><i class="far fa-clock"></i> 创建时间</label>
+            <select class="form-control range-select">
+                ${DASH_RANGE_OPTIONS.map(o => `<option value="${o.value}" ${o.value === opts.range ? 'selected' : ''}>${o.label}</option>`).join('')}
+            </select>
+            <input type="text" class="form-control keyword-input" placeholder="${opts.placeholder || '输入关键字检索'}" value="${escHtml(opts.keyword || '')}">
+            <button class="btn btn-primary btn-search"><i class="fas fa-search"></i> 检索</button>
+            <button class="btn btn-default btn-reset">重置</button>
+            <span class="list-total-hint" id="${containerId}Hint"></span>
+        </div>`;
+    el.querySelector('.range-select').addEventListener('change', e => opts.onRangeChange(e.target.value));
+    const doSearch = () => opts.onKeyword(el.querySelector('.keyword-input').value.trim());
+    el.querySelector('.btn-search').addEventListener('click', doSearch);
+    el.querySelector('.keyword-input').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
+    el.querySelector('.btn-reset').addEventListener('click', () => opts.onReset());
+}
+
+/** 空结果提示：区分「时间范围内无新增明细」与「关键字无结果」，均给出补充数据入口 */
+function renderEmptyRow(cols, opts) {
+    const isRangeEmpty = opts.range && opts.range !== 'all' && !opts.keyword;
+    const icon = isRangeEmpty ? 'far fa-folder-open' : 'fas fa-inbox';
+    const reason = isRangeEmpty
+        ? `${dashRangeLabel(opts.range)}内暂无新增${opts.entityLabel || '明细'}，明细可能尚未生成`
+        : (opts.keyword ? `未找到与「${escHtml(opts.keyword)}」匹配的${opts.entityLabel || '明细'}` : `暂无${opts.entityLabel || '明细'}数据`);
+    return `<tr><td colspan="${cols}" class="empty-state">
+        <i class="${icon}"></i>
+        <p>${reason}</p>
+        <button class="btn btn-primary btn-sm" onclick="${opts.addHandler}"><i class="fas fa-plus"></i> 立即补充${opts.entityLabel || '数据'}</button>
+    </td></tr>`;
+}
+
 function saveUser(u) {
     localStorage.setItem('user', JSON.stringify(u));
 }

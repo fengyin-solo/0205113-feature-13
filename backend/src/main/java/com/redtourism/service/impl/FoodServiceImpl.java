@@ -45,11 +45,26 @@ public class FoodServiceImpl extends ServiceImpl<FoodMapper, Food> implements Fo
     }
 
     @Override
-    public List<FoodStore> listStores(String keyword) {
+    public List<FoodStore> listStores(String keyword, String startDate, String endDate) {
         LambdaQueryWrapper<FoodStore> wrapper = new LambdaQueryWrapper<>();
         if (StringUtils.hasText(keyword)) {
-            wrapper.like(FoodStore::getName, keyword)
-                    .or().like(FoodStore::getLocation, keyword);
+            String kw = keyword.trim();
+            wrapper.and(w -> w.like(FoodStore::getName, kw)
+                    .or().like(FoodStore::getLocation, kw)
+                    .or().like(FoodStore::getCategory, kw));
+        }
+        if (startDate != null && !startDate.trim().isEmpty()) {
+            try {
+                wrapper.ge(FoodStore::getCreateTime,
+                        java.sql.Timestamp.valueOf(java.time.LocalDate.parse(startDate.trim()).atStartOfDay()));
+            } catch (Exception ignored) {}
+        }
+        if (endDate != null && !endDate.trim().isEmpty()) {
+            try {
+                wrapper.le(FoodStore::getCreateTime,
+                        java.sql.Timestamp.valueOf(
+                                java.time.LocalDate.parse(endDate.trim()).atTime(java.time.LocalTime.MAX)));
+            } catch (Exception ignored) {}
         }
         wrapper.orderByDesc(FoodStore::getCreateTime);
         return foodStoreMapper.selectList(wrapper);

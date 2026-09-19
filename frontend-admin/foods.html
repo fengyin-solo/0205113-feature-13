@@ -48,10 +48,11 @@
                         <h2>美食列表</h2>
                         <button class="btn btn-primary" onclick="openFoodModal()"><i class="fas fa-plus"></i> 新增美食</button>
                     </div>
+                    <div id="foodFilterBar"></div>
                     <div class="table-wrapper">
                         <table>
-                            <thead><tr><th>ID</th><th>封面</th><th>名称</th><th>分类</th><th>价格</th><th>门店</th><th>操作</th></tr></thead>
-                            <tbody id="foodBody"><tr><td colspan="7" class="loading"><i class="fas fa-spinner fa-spin"></i> 加载中...</td></tr></tbody>
+                            <thead><tr><th>ID</th><th>封面</th><th>名称</th><th>分类</th><th>价格</th><th>门店</th><th>创建时间</th><th>操作</th></tr></thead>
+                            <tbody id="foodBody"><tr><td colspan="8" class="loading"><i class="fas fa-spinner fa-spin"></i> 加载中...</td></tr></tbody>
                         </table>
                     </div>
                     <div class="pagination" id="foodPagination"></div>
@@ -64,10 +65,11 @@
                         <h2>门店列表</h2>
                         <button class="btn btn-primary" onclick="openStoreModal()"><i class="fas fa-plus"></i> 新增门店</button>
                     </div>
+                    <div id="storeFilterBar"></div>
                     <div class="table-wrapper">
                         <table>
-                            <thead><tr><th>ID</th><th>封面</th><th>名称</th><th>地址</th><th>分类</th><th>卫生等级</th><th>电话</th><th>操作</th></tr></thead>
-                            <tbody id="storeBody"><tr><td colspan="8" class="loading"><i class="fas fa-spinner fa-spin"></i> 加载中...</td></tr></tbody>
+                            <thead><tr><th>ID</th><th>封面</th><th>名称</th><th>地址</th><th>分类</th><th>卫生等级</th><th>电话</th><th>创建时间</th><th>操作</th></tr></thead>
+                            <tbody id="storeBody"><tr><td colspan="9" class="loading"><i class="fas fa-spinner fa-spin"></i> 加载中...</td></tr></tbody>
                         </table>
                     </div>
                     <div class="pagination" id="storePagination"></div>
@@ -142,7 +144,11 @@ if (!requireAdmin()) throw '';
 renderSidebar();
 
 let foodPage = 1, storePage = 1;
-let stores = [];
+let stores = [];          // 全部门店（供美食表单下拉，不受列表筛选影响）
+let foodKeyword = '', storeKeyword = '';
+let foodRange = initListRange('food');
+let storeRange = initListRange('foodStore');
+const STORE_SIZE = 10;
 
 function switchTab(tab) {
     document.querySelectorAll('.tab-btn').forEach((b, i) => b.classList.toggle('active', (tab === 'food' ? i === 0 : i === 1)));
@@ -150,21 +156,69 @@ function switchTab(tab) {
     document.getElementById('tabStore').classList.toggle('active', tab === 'store');
 }
 
+function setupFoodFilterBar() {
+    renderListFilterBar('foodFilterBar', {
+        range: foodRange,
+        keyword: foodKeyword,
+        placeholder: '按名称 / 描述 / 分类检索',
+        entityLabel: '美食',
+        addHandler: 'openFoodModal()',
+        onRangeChange: (r) => { foodRange = r; saveListRange('food', r); loadFoods(1); },
+        onKeyword: (kw) => { foodKeyword = kw; loadFoods(1); },
+        onReset: () => { foodKeyword = ''; foodRange = '7'; saveListRange('food', foodRange); setupFoodFilterBar(); loadFoods(1); }
+    });
+}
+
+function setupStoreFilterBar() {
+    renderListFilterBar('storeFilterBar', {
+        range: storeRange,
+        keyword: storeKeyword,
+        placeholder: '按门店名称 / 地址 / 分类检索',
+        entityLabel: '门店',
+        addHandler: 'openStoreModal()',
+        onRangeChange: (r) => { storeRange = r; saveListRange('foodStore', r); loadStores(1); },
+        onKeyword: (kw) => { storeKeyword = kw; loadStores(1); },
+        onReset: () => { storeKeyword = ''; storeRange = '7'; saveListRange('foodStore', storeRange); setupStoreFilterBar(); loadStores(1); }
+    });
+}
+setupFoodFilterBar();
+setupStoreFilterBar();
+
 async function loadStores(page) {
     storePage = page || 1;
-    document.getElementById('storeBody').innerHTML = '<tr><td colspan="8" class="loading"><i class="fas fa-spinner fa-spin"></i> 加载中...</td></tr>';
-    const data = await api(`/api/food/stores?page=${storePage}&size=10`);
-    if (!data) { document.getElementById('storeBody').innerHTML = '<tr><td colspan="8" class="empty-state">加载失败</td></tr>'; return; }
+    document.getElementById('storeBody').innerHTML = '<tr><td colspan="9" class="loading"><i class="fas fa-spinner fa-spin"></i> 加载中...</td></tr>';
+    const query = new URLSearchParams();
+    if (storeKeyword) query.set('keyword', storeKeyword);
+    if (storeRange !== 'all') {
+        const [startDate, endDate] = rangeToDates(storeRange);
+        query.set('startDate', startDate);
+        query.set('endDate', endDate);
+    }
+    const data = await api(`/api/food/stores?${query.toString()}`);
+    if (!data) { document.getElementById('storeBody').innerHTML = '<tr><td colspan="9" class="empty-state">加载失败</td></tr>'; return; }
 
     const list = data.records || data.list || data || [];
-    stores = Array.isArray(data) ? data : list;
-    const total = data.pages || data.totalPages || Math.ceil((data.total || list.length) / 10);
-    updateStoreSelect();
 
-    if (!list.length) { document.getElementById('storeBody').innerHTML = '<tr><td colspan="8" class="empty-state"><i class="fas fa-inbox"></i> 暂无数据</td></tr>'; document.getElementById('storePagination').innerHTML = ''; return; }
+    const storePages = Math.max(1, Math.ceil(list.length / STORE_SIZE));
+    if (storePage > storePages) storePage = storePages;
+    const pageList = list.slice((storePage - 1) * STORE_SIZE, storePage * STORE_SIZE);
+
+    const hint = document.getElementById('storeFilterBarHint');
+    if (hint) {
+        hint.textContent = storeRange === 'all'
+            ? `共 ${list.length} 家门店`
+            : `共 ${list.length} 条（${dashRangeLabel(storeRange)}创建）`;
+    }
+    if (!list.length) {
+        document.getElementById('storeBody').innerHTML = renderEmptyRow(9, {
+            range: storeRange, keyword: storeKeyword, entityLabel: '门店', addHandler: 'openStoreModal()'
+        });
+        document.getElementById('storePagination').innerHTML = '';
+        return;
+    }
 
     let h = '';
-    list.forEach(s => {
+    pageList.forEach(s => {
         const cover = s.coverImage ? `<img src="${imgSrc(s.coverImage)}" class="img-preview" onerror="imgError(this)">` : '-';
         h += `<tr>
             <td>${s.id}</td>
@@ -174,6 +228,7 @@ async function loadStores(page) {
             <td>${escHtml(s.category || '-')}</td>
             <td>${escHtml(s.hygieneLevel || '-')}</td>
             <td>${escHtml(s.phone || '-')}</td>
+            <td>${formatDate(s.createTime)}</td>
             <td class="action-btns">
                 <button class="btn btn-sm btn-info" onclick="editStore(${s.id})"><i class="fas fa-edit"></i></button>
                 <button class="btn btn-sm btn-danger" onclick="deleteStore(${s.id})"><i class="fas fa-trash"></i></button>
@@ -181,7 +236,7 @@ async function loadStores(page) {
         </tr>`;
     });
     document.getElementById('storeBody').innerHTML = h;
-    renderPagination('storePagination', storePage, total, 'loadStores');
+    renderPagination('storePagination', storePage, storePages, 'loadStores');
 }
 
 function updateStoreSelect() {
@@ -191,15 +246,32 @@ function updateStoreSelect() {
     sel.innerHTML = h;
 }
 
+async function loadAllStores() {
+    const data = await api('/api/food/stores');
+    if (Array.isArray(data)) { stores = data; updateStoreSelect(); }
+}
+
 async function loadFoods(page) {
     foodPage = page || 1;
-    document.getElementById('foodBody').innerHTML = '<tr><td colspan="7" class="loading"><i class="fas fa-spinner fa-spin"></i> 加载中...</td></tr>';
-    const data = await api(`/api/food/list?page=${foodPage}&size=10`);
-    if (!data) { document.getElementById('foodBody').innerHTML = '<tr><td colspan="7" class="empty-state">加载失败</td></tr>'; return; }
+    document.getElementById('foodBody').innerHTML = '<tr><td colspan="8" class="loading"><i class="fas fa-spinner fa-spin"></i> 加载中...</td></tr>';
+    const data = await api(`/api/admin/food/list?${buildListQuery('food', foodPage, 10, { keyword: foodKeyword })}`);
+    if (!data) { document.getElementById('foodBody').innerHTML = '<tr><td colspan="8" class="empty-state">加载失败</td></tr>'; return; }
 
     const list = data.records || data.list || data || [];
-    const total = data.pages || data.totalPages || Math.ceil((data.total || list.length) / 10);
-    if (!list.length) { document.getElementById('foodBody').innerHTML = '<tr><td colspan="7" class="empty-state"><i class="fas fa-inbox"></i> 暂无数据</td></tr>'; document.getElementById('foodPagination').innerHTML = ''; return; }
+    const totalPages = data.pages || data.totalPages || Math.ceil((data.total || list.length) / 10);
+    const hint = document.getElementById('foodFilterBarHint');
+    if (hint) {
+        hint.textContent = foodRange === 'all'
+            ? `共 ${data.total ?? list.length} 个美食`
+            : `共 ${data.total ?? list.length} 条（${dashRangeLabel(foodRange)}创建）`;
+    }
+    if (!list.length) {
+        document.getElementById('foodBody').innerHTML = renderEmptyRow(8, {
+            range: foodRange, keyword: foodKeyword, entityLabel: '美食', addHandler: 'openFoodModal()'
+        });
+        document.getElementById('foodPagination').innerHTML = '';
+        return;
+    }
 
     let h = '';
     list.forEach(f => {
@@ -211,6 +283,7 @@ async function loadFoods(page) {
             <td>${escHtml(f.category || '-')}</td>
             <td>${f.price != null ? '¥' + f.price : '-'}</td>
             <td>${escHtml(f.storeName || '-')}</td>
+            <td>${formatDate(f.createTime)}</td>
             <td class="action-btns">
                 <button class="btn btn-sm btn-info" onclick="editFood(${f.id})"><i class="fas fa-edit"></i></button>
                 <button class="btn btn-sm btn-danger" onclick="deleteFood(${f.id})"><i class="fas fa-trash"></i></button>
@@ -218,7 +291,7 @@ async function loadFoods(page) {
         </tr>`;
     });
     document.getElementById('foodBody').innerHTML = h;
-    renderPagination('foodPagination', foodPage, total, 'loadFoods');
+    renderPagination('foodPagination', foodPage, totalPages, 'loadFoods');
 }
 
 function openFoodModal(item) {
@@ -314,6 +387,7 @@ function deleteStore(id) {
     });
 }
 
+loadAllStores();
 loadStores(1);
 loadFoods(1);
 </script>

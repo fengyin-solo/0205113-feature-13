@@ -32,10 +32,11 @@ public class FoodController {
     }
 
     @GetMapping("/stores")
-    public Result<List<FoodStore>> stores(@RequestParam(required = false) String keyword) {
-        return Result.success(foodService.listStores(keyword));
+    public Result<List<FoodStore>> stores(@RequestParam(required = false) String keyword,
+                                          @RequestParam(required = false) String startDate,
+                                          @RequestParam(required = false) String endDate) {
+        return Result.success(foodService.listStores(keyword, startDate, endDate));
     }
-
     @GetMapping("/storeDetail")
     public Result<FoodStore> storeDetail(@RequestParam Long id) {
         return Result.success(foodService.getStoreDetail(id));
